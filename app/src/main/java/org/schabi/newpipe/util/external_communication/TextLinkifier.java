@@ -1,5 +1,7 @@
 package org.schabi.newpipe.util.external_communication;
 
+import static org.schabi.newpipe.util.external_communication.InternalUrlsHandler.playOnPopup;
+
 import android.content.Context;
 import android.text.SpannableStringBuilder;
 import android.text.method.LinkMovementMethod;
@@ -14,10 +16,11 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.text.HtmlCompat;
 
-import org.schabi.newpipe.extractor.Info;
-import org.schabi.newpipe.extractor.stream.StreamInfo;
+import org.schabi.newpipe.extractor.StreamingService;
+import org.schabi.newpipe.extractor.stream.Description;
 import org.schabi.newpipe.util.NavigationHelper;
 
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -28,8 +31,6 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
-import static org.schabi.newpipe.util.external_communication.InternalUrlsHandler.playOnPopup;
-
 public final class TextLinkifier {
     public static final String TAG = TextLinkifier.class.getSimpleName();
 
@@ -37,82 +38,146 @@ public final class TextLinkifier {
     private static final Pattern HASHTAGS_PATTERN =
             Pattern.compile("(#[\\p{L}0-9_]+)");
 
+    public static final Consumer<TextView> SET_LINK_MOVEMENT_METHOD =
+            v -> v.setMovementMethod(LinkMovementMethod.getInstance());
+
     private TextLinkifier() {
+    }
+
+    /**
+     * Create web links for contents with an {@link Description} in the various possible formats.
+     * <p>
+     * This will call one of these three functions based on the format: {@link #fromHtml},
+     * {@link #fromMarkdown} or {@link #fromPlainText}.
+     *
+     * @param textView           the TextView to set the htmlBlock linked
+     * @param description        the htmlBlock to be linked
+     * @param htmlCompatFlag     the int flag to be set if {@link HtmlCompat#fromHtml(String, int)}
+     *                           will be called (not used for formats different than HTML)
+     * @param relatedInfoService if given, handle hashtags to search for the term in the correct
+     *                           service
+     * @param relatedStreamUrl   if given, used alongside {@code relatedInfoService} to handle
+     *                           timestamps to open the stream in the popup player at the specific
+     *                           time
+     * @param disposables        disposables created by the method are added here and their
+     *                           lifecycle should be handled by the calling class
+     * @param onCompletion       will be run when setting text to the textView completes; use {@link
+     *                           #SET_LINK_MOVEMENT_METHOD} to make links clickable and focusable
+     */
+    public static void fromDescription(@NonNull final TextView textView,
+                                       final Description description,
+                                       final int htmlCompatFlag,
+                                       @Nullable final StreamingService relatedInfoService,
+                                       @Nullable final String relatedStreamUrl,
+                                       final CompositeDisposable disposables,
+                                       @Nullable final Consumer<TextView> onCompletion) {
+        switch (description.getType()) {
+            case Description.HTML:
+                TextLinkifier.fromHtml(textView, description.getContent(), htmlCompatFlag,
+                        relatedInfoService, relatedStreamUrl, disposables, onCompletion);
+                break;
+            case Description.MARKDOWN:
+                TextLinkifier.fromMarkdown(textView, description.getContent(),
+                        relatedInfoService, relatedStreamUrl, disposables, onCompletion);
+                break;
+            case Description.PLAIN_TEXT: default:
+                TextLinkifier.fromPlainText(textView, description.getContent(),
+                        relatedInfoService, relatedStreamUrl, disposables, onCompletion);
+                break;
+        }
     }
 
     /**
      * Create web links for contents with an HTML description.
      * <p>
-     * This will call {@link TextLinkifier#changeIntentsOfDescriptionLinks(TextView, CharSequence,
-     * Info, CompositeDisposable)} after having linked the URLs with
+     * This will call {@link TextLinkifier#changeLinkIntents} after having linked the URLs with
      * {@link HtmlCompat#fromHtml(String, int)}.
      *
-     * @param textView       the TextView to set the htmlBlock linked
-     * @param htmlBlock      the htmlBlock to be linked
-     * @param htmlCompatFlag the int flag to be set when {@link HtmlCompat#fromHtml(String, int)}
-     *                       will be called
-     * @param relatedInfo    if given, handle timestamps to open the stream in the popup player at
-     *                       the specific time, and hashtags to search for the term in the correct
-     *                       service
-     * @param disposables    disposables created by the method are added here and their lifecycle
-     *                       should be handled by the calling class
+     * @param textView           the TextView to set the htmlBlock linked
+     * @param htmlBlock          the htmlBlock to be linked
+     * @param htmlCompatFlag     the int flag to be set when {@link HtmlCompat#fromHtml(String,
+     *                           int)} will be called
+     * @param relatedInfoService if given, handle hashtags to search for the term in the correct
+     *                           service
+     * @param relatedStreamUrl   if given, used alongside {@code relatedInfoService} to handle
+     *                           timestamps to open the stream in the popup player at the specific
+     *                           time
+     * @param disposables        disposables created by the method are added here and their
+     *                           lifecycle should be handled by the calling class
+     * @param onCompletion       will be run when setting text to the textView completes; use {@link
+     *                           #SET_LINK_MOVEMENT_METHOD} to make links clickable and focusable
      */
-    public static void createLinksFromHtmlBlock(@NonNull final TextView textView,
-                                                final String htmlBlock,
-                                                final int htmlCompatFlag,
-                                                @Nullable final Info relatedInfo,
-                                                final CompositeDisposable disposables) {
-        changeIntentsOfDescriptionLinks(
-                textView, HtmlCompat.fromHtml(htmlBlock, htmlCompatFlag), relatedInfo, disposables);
+    public static void fromHtml(@NonNull final TextView textView,
+                                final String htmlBlock,
+                                final int htmlCompatFlag,
+                                @Nullable final StreamingService relatedInfoService,
+                                @Nullable final String relatedStreamUrl,
+                                final CompositeDisposable disposables,
+                                @Nullable final Consumer<TextView> onCompletion) {
+        changeLinkIntents(
+                textView, HtmlCompat.fromHtml(htmlBlock, htmlCompatFlag), relatedInfoService,
+                relatedStreamUrl, disposables, onCompletion);
     }
 
     /**
      * Create web links for contents with a plain text description.
      * <p>
-     * This will call {@link TextLinkifier#changeIntentsOfDescriptionLinks(TextView, CharSequence,
-     * Info, CompositeDisposable)} after having linked the URLs with
+     * This will call {@link TextLinkifier#changeLinkIntents} after having linked the URLs with
      * {@link TextView#setAutoLinkMask(int)} and
      * {@link TextView#setText(CharSequence, TextView.BufferType)}.
      *
-     * @param textView       the TextView to set the plain text block linked
-     * @param plainTextBlock the block of plain text to be linked
-     * @param relatedInfo    if given, handle timestamps to open the stream in the popup player at
-     *                       the specific time, and hashtags to search for the term in the correct
-     *                       service
-     * @param disposables    disposables created by the method are added here and their lifecycle
-     *                       should be handled by the calling class
+     * @param textView           the TextView to set the plain text block linked
+     * @param plainTextBlock     the block of plain text to be linked
+     * @param relatedInfoService if given, handle hashtags to search for the term in the correct
+     *                           service
+     * @param relatedStreamUrl   if given, used alongside {@code relatedInfoService} to handle
+     *                           timestamps to open the stream in the popup player at the specific
+     *                           time
+     * @param disposables        disposables created by the method are added here and their
+     *                           lifecycle should be handled by the calling class
+     * @param onCompletion       will be run when setting text to the textView completes; use {@link
+     *                           #SET_LINK_MOVEMENT_METHOD} to make links clickable and focusable
      */
-    public static void createLinksFromPlainText(@NonNull final TextView textView,
-                                                final String plainTextBlock,
-                                                @Nullable final Info relatedInfo,
-                                                final CompositeDisposable disposables) {
+    public static void fromPlainText(@NonNull final TextView textView,
+                                     final String plainTextBlock,
+                                     @Nullable final StreamingService relatedInfoService,
+                                     @Nullable final String relatedStreamUrl,
+                                     final CompositeDisposable disposables,
+                                     @Nullable final Consumer<TextView> onCompletion) {
         textView.setAutoLinkMask(Linkify.WEB_URLS);
         textView.setText(plainTextBlock, TextView.BufferType.SPANNABLE);
-        changeIntentsOfDescriptionLinks(textView, textView.getText(), relatedInfo, disposables);
+        changeLinkIntents(textView, textView.getText(), relatedInfoService,
+                relatedStreamUrl, disposables, onCompletion);
     }
 
     /**
      * Create web links for contents with a markdown description.
      * <p>
-     * This will call {@link TextLinkifier#changeIntentsOfDescriptionLinks(TextView, CharSequence,
-     * Info, CompositeDisposable)} after creating an {@link Markwon} object and using
-     * {@link Markwon#setMarkdown(TextView, String)}.
+     * This will call {@link TextLinkifier#changeLinkIntents} after creating an {@link Markwon}
+     * object and using {@link Markwon#setMarkdown(TextView, String)}.
      *
-     * @param textView      the TextView to set the plain text block linked
-     * @param markdownBlock the block of markdown text to be linked
-     * @param relatedInfo   if given, handle timestamps to open the stream in the popup player at
-     *                      the specific time, and hashtags to search for the term in the correct
-     * @param disposables   disposables created by the method are added here and their lifecycle
-     *                      should be handled by the calling class
+     * @param textView           the TextView to set the plain text block linked
+     * @param markdownBlock      the block of markdown text to be linked
+     * @param relatedInfoService if given, handle hashtags to search for the term in the correct
+     *                           service
+     * @param relatedStreamUrl   if given, used alongside {@code relatedInfoService} to handle
+     *                           timestamps to open the stream in the popup player at the specific
+     *                           time
+     * @param disposables        disposables created by the method are added here and their
+     *                           lifecycle should be handled by the calling class
+     * @param onCompletion       will be run when setting text to the textView completes; use {@link
+     *                           #SET_LINK_MOVEMENT_METHOD} to make links clickable and focusable
      */
-    public static void createLinksFromMarkdownText(@NonNull final TextView textView,
-                                                   final String markdownBlock,
-                                                   @Nullable final Info relatedInfo,
-                                                   final CompositeDisposable disposables) {
+    public static void fromMarkdown(@NonNull final TextView textView,
+                                    final String markdownBlock,
+                                    @Nullable final StreamingService relatedInfoService,
+                                    @Nullable final String relatedStreamUrl,
+                                    final CompositeDisposable disposables,
+                                    @Nullable final Consumer<TextView> onCompletion) {
         final Markwon markwon = Markwon.builder(textView.getContext())
                 .usePlugin(LinkifyPlugin.create()).build();
-        changeIntentsOfDescriptionLinks(textView, markwon.toMarkdown(markdownBlock), relatedInfo,
-                disposables);
+        changeLinkIntents(textView, markwon.toMarkdown(markdownBlock),
+                relatedInfoService, relatedStreamUrl, disposables, onCompletion);
     }
 
     /**
@@ -126,12 +191,12 @@ public final class TextLinkifier {
      * @param context              the context to use
      * @param spannableDescription the SpannableStringBuilder with the text of the
      *                             content description
-     * @param relatedInfo          used to search for the term in the correct service
+     * @param relatedInfoService   used to search for the term in the correct service
      */
     private static void addClickListenersOnHashtags(final Context context,
                                                     @NonNull final SpannableStringBuilder
                                                             spannableDescription,
-                                                    final Info relatedInfo) {
+                                                    final StreamingService relatedInfoService) {
         final String descriptionText = spannableDescription.toString();
         final Matcher hashtagsMatches = HASHTAGS_PATTERN.matcher(descriptionText);
 
@@ -147,7 +212,7 @@ public final class TextLinkifier {
                 spannableDescription.setSpan(new ClickableSpan() {
                     @Override
                     public void onClick(@NonNull final View view) {
-                        NavigationHelper.openSearch(context, relatedInfo.getServiceId(),
+                        NavigationHelper.openSearch(context, relatedInfoService.getServiceId(),
                                 parsedHashtag);
                     }
                 }, hashtagStart, hashtagEnd, 0);
@@ -165,14 +230,16 @@ public final class TextLinkifier {
      * @param context              the context to use
      * @param spannableDescription the SpannableStringBuilder with the text of the
      *                             content description
-     * @param relatedInfo          what to open in the popup player when timestamps are clicked
+     * @param relatedInfoService   the service of the {@code relatedStreamUrl}
+     * @param relatedStreamUrl     what to open in the popup player when timestamps are clicked
      * @param disposables          disposables created by the method are added here and their
      *                             lifecycle should be handled by the calling class
      */
     private static void addClickListenersOnTimestamps(final Context context,
                                                       @NonNull final SpannableStringBuilder
                                                               spannableDescription,
-                                                      final Info relatedInfo,
+                                                      final StreamingService relatedInfoService,
+                                                      final String relatedStreamUrl,
                                                       final CompositeDisposable disposables) {
         final String descriptionText = spannableDescription.toString();
         final Matcher timestampsMatches =
@@ -194,8 +261,8 @@ public final class TextLinkifier {
                         public void onClick(@NonNull final View view) {
                             playOnPopup(
                                     context,
-                                    relatedInfo.getUrl(),
-                                    relatedInfo.getService(),
+                                    relatedStreamUrl,
+                                    relatedInfoService,
                                     timestampMatchDTO.seconds(),
                                     disposables);
                         }
@@ -215,26 +282,32 @@ public final class TextLinkifier {
      * with {@link ShareUtils#openUrlInBrowser(Context, String, boolean)}.
      * This method will also add click listeners on timestamps in this description, which will play
      * the content in the popup player at the time indicated in the timestamp, by using
-     * {@link TextLinkifier#addClickListenersOnTimestamps(Context, SpannableStringBuilder, Info,
-     * CompositeDisposable)} method and click listeners on hashtags, by using
-     * {@link TextLinkifier#addClickListenersOnHashtags(Context, SpannableStringBuilder, Info)},
-     * which will open a search on the current service with the hashtag.
+     * {@link TextLinkifier#addClickListenersOnTimestamps(Context, SpannableStringBuilder,
+     * StreamingService, String, CompositeDisposable)} method and click listeners on hashtags, by
+     * using {@link TextLinkifier#addClickListenersOnHashtags(Context, SpannableStringBuilder,
+     * StreamingService)} )}, which will open a search on the current service with the hashtag.
      * <p>
      * This method is required in order to intercept links and e.g. show a confirmation dialog
      * before opening a web link.
      *
-     * @param textView    the TextView in which the converted CharSequence will be applied
-     * @param chars       the CharSequence to be parsed
-     * @param relatedInfo if given, handle timestamps to open the stream in the popup player at
-     *                    the specific time, and hashtags to search for the term in the correct
-     *                    service
-     * @param disposables disposables created by the method are added here and their lifecycle
-     *                    should be handled by the calling class
+     * @param textView           the TextView in which the converted CharSequence will be applied
+     * @param chars              the CharSequence to be parsed
+     * @param relatedInfoService if given, handle hashtags to search for the term in the correct
+     *                           service
+     * @param relatedStreamUrl   if given, used alongside {@code relatedInfoService} to handle
+     *                           timestamps to open the stream in the popup player at the specific
+     *                           time
+     * @param disposables        disposables created by the method are added here and their
+     *                           lifecycle should be handled by the calling class
+     * @param onCompletion       will be run when setting text to the textView completes; use {@link
+     *                           #SET_LINK_MOVEMENT_METHOD} to make links clickable and focusable
      */
-    private static void changeIntentsOfDescriptionLinks(final TextView textView,
-                                                        final CharSequence chars,
-                                                        @Nullable final Info relatedInfo,
-                                                        final CompositeDisposable disposables) {
+    private static void changeLinkIntents(final TextView textView,
+                                          final CharSequence chars,
+                                          @Nullable final StreamingService relatedInfoService,
+                                          @Nullable final String relatedStreamUrl,
+                                          final CompositeDisposable disposables,
+                                          @Nullable final Consumer<TextView> onCompletion) {
         disposables.add(Single.fromCallable(() -> {
             final Context context = textView.getContext();
 
@@ -260,30 +333,34 @@ public final class TextLinkifier {
 
             // add click actions on plain text timestamps only for description of contents,
             // unneeded for meta-info or other TextViews
-            if (relatedInfo != null) {
-                if (relatedInfo instanceof StreamInfo) {
-                    addClickListenersOnTimestamps(context, textBlockLinked, relatedInfo,
-                            disposables);
+            if (relatedInfoService != null) {
+                if (relatedStreamUrl != null) {
+                    addClickListenersOnTimestamps(context, textBlockLinked, relatedInfoService,
+                            relatedStreamUrl, disposables);
                 }
-                addClickListenersOnHashtags(context, textBlockLinked, relatedInfo);
+                addClickListenersOnHashtags(context, textBlockLinked, relatedInfoService);
             }
 
             return textBlockLinked;
         }).subscribeOn(Schedulers.computation())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(
-                        textBlockLinked -> setTextViewCharSequence(textView, textBlockLinked),
+                        textBlockLinked ->
+                                setTextViewCharSequence(textView, textBlockLinked, onCompletion),
                         throwable -> {
                             Log.e(TAG, "Unable to linkify text", throwable);
                             // this should never happen, but if it does, just fallback to it
-                            setTextViewCharSequence(textView, chars);
+                            setTextViewCharSequence(textView, chars, onCompletion);
                         }));
     }
 
     private static void setTextViewCharSequence(@NonNull final TextView textView,
-                                                final CharSequence charSequence) {
+                                                final CharSequence charSequence,
+                                                @Nullable final Consumer<TextView> onCompletion) {
         textView.setText(charSequence);
-        textView.setMovementMethod(LinkMovementMethod.getInstance());
         textView.setVisibility(View.VISIBLE);
+        if (onCompletion != null) {
+            onCompletion.accept(textView);
+        }
     }
 }
